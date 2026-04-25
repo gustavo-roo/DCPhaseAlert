@@ -1,0 +1,5 @@
+{
+  "name": "Disney Central Phase Alert Hub",
+  "description": "A modern, mobile-responsive web dashboard for managing community status alerts with email and Teams notification generation.",
+  "requestFramePermissions": []
+}
