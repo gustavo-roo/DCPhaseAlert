@@ -42,30 +42,56 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
 
   // Fetch initial state and poll for updates
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
   useEffect(() => {
+    let isMounted = true;
     const fetchState = async () => {
       try {
-        const res = await fetch('/api/communities');
+        const res = await fetch('/api/communities', { 
+          cache: 'no-store',
+          headers: {
+            'Accept': 'application/json'
+          }
+        });
+        
+        if (!isMounted) return;
+
         if (!res.ok) {
           const text = await res.text();
-          throw new Error(`Server responded with ${res.status}: ${text.slice(0, 100)}...`);
+          throw new Error(`Server responded with ${res.status}: ${text.slice(0, 50)}`);
         }
+        
         const contentType = res.headers.get("content-type");
         if (!contentType || !contentType.includes("application/json")) {
           const text = await res.text();
-          throw new Error(`Expected JSON but got ${contentType}. Body: ${text.slice(0, 100)}...`);
+          throw new Error(`Invalid response type: ${contentType}`);
         }
+        
         const data = await res.json();
-        setCommunities(data);
-        setIsLoading(false);
+        if (isMounted) {
+          setCommunities(data);
+          setIsLoading(false);
+          setFetchError(null);
+        }
       } catch (err) {
-        console.error('Failed to fetch communities:', err);
+        if (isMounted) {
+          console.error('Fetch error:', err);
+          setFetchError(err instanceof Error ? err.message : 'Load failed');
+          // If it's the first load and it fails, we move out of loading state to show error
+          if (communities.length === 0) {
+            setIsLoading(false);
+          }
+        }
       }
     };
 
     fetchState();
-    const interval = setInterval(fetchState, 5000); // Poll every 5 seconds
-    return () => clearInterval(interval);
+    const interval = setInterval(fetchState, 5000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   const [showModal, setShowModal] = useState(false);
@@ -564,7 +590,7 @@ export default function App() {
   };
 
   if (view === 'tv') {
-    return <TVDashboard communities={communities} isLoading={isLoading} />;
+    return <TVDashboard communities={communities} isLoading={isLoading} fetchError={fetchError} />;
   }
 
   if (!user) {
@@ -661,6 +687,24 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8 pb-32">
+        {fetchError && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between text-red-800">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 flex-shrink-0" />
+              <div>
+                <p className="font-bold text-sm">Connection Error</p>
+                <p className="text-xs opacity-80">{fetchError}</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-3 py-1 bg-red-100 hover:bg-red-200 rounded-lg text-xs font-bold transition-colors"
+            >
+              Reconnect
+            </button>
+          </div>
+        )}
+
         {isLoading ? (
           <div className="flex items-center justify-center h-64">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#002244]"></div>
@@ -920,7 +964,7 @@ const StatusIcon: React.FC<{ status: Status, size?: number }> = ({ status, size 
   }
 }
 
-const TVDashboard: React.FC<{ communities: Community[], isLoading: boolean }> = ({ communities, isLoading }) => {
+const TVDashboard: React.FC<{ communities: Community[], isLoading: boolean, fetchError: string | null }> = ({ communities, isLoading, fetchError }) => {
   return (
     <div className="h-screen bg-[#001122] text-white p-4 flex flex-col font-sans overflow-hidden">
       <header className="flex items-center justify-between mb-4 border-b border-white/10 pb-4">
@@ -936,6 +980,7 @@ const TVDashboard: React.FC<{ communities: Community[], isLoading: boolean }> = 
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
               </span>
               REAL-TIME OPERATIONAL STATUS
+              {fetchError && <span className="text-red-500 ml-2 uppercase tracking-widest animate-pulse">!! Connection Lost !!</span>}
             </p>
           </div>
         </div>

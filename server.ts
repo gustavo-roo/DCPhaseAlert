@@ -54,26 +54,51 @@ async function startServer() {
   });
 
   // API: Get current state
-  app.get("/api/communities", (req, res) => {
-    console.log(`[${new Date().toISOString()}] GET /api/communities - Returning state`);
-    res.json(communityState);
+  app.get(["/api/communities", "/api/communities/"], (req, res) => {
+    try {
+      console.log(`[${new Date().toISOString()}] GET ${req.originalUrl} - Returning state`);
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.json(communityState);
+    } catch (error) {
+      console.error('Error in GET /api/communities:', error);
+      res.status(500).json({ error: 'Internal Server Error' });
+    }
   });
 
   // API: Update a community status
-  app.post("/api/communities/update", (req, res) => {
-    const { id, status } = req.body;
-    console.log(`[${new Date().toISOString()}] POST /api/communities/update - ID: ${id}, Status: ${status}`);
-    communityState = communityState.map(c => 
-      c.id === id ? { ...c, status, isUpdated: true } : c
-    );
-    res.json({ success: true, state: communityState });
+  app.post(["/api/communities/update", "/api/communities/update/"], (req, res) => {
+    try {
+      const { id, status } = req.body;
+      console.log(`[${new Date().toISOString()}] POST ${req.originalUrl} - ID: ${id}, Status: ${status}`);
+      if (!id || !status) {
+        return res.status(400).json({ error: 'Missing ID or Status' });
+      }
+      communityState = communityState.map(c => 
+        c.id === id ? { ...c, status, isUpdated: true } : c
+      );
+      res.json({ success: true, state: communityState });
+    } catch (error) {
+      console.error('Error in POST /api/communities/update:', error);
+      res.status(500).json({ error: 'Internal Server Error' });
+    }
   });
 
   // API: Reset all updates
-  app.post("/api/communities/reset", (req, res) => {
-    console.log(`[${new Date().toISOString()}] POST /api/communities/reset - Resetting updates`);
-    communityState = communityState.map(c => ({ ...c, isUpdated: false }));
-    res.json({ success: true, state: communityState });
+  app.post(["/api/communities/reset", "/api/communities/reset/"], (req, res) => {
+    try {
+      console.log(`[${new Date().toISOString()}] POST ${req.originalUrl} - Resetting updates`);
+      communityState = communityState.map(c => ({ ...c, isUpdated: false }));
+      res.json({ success: true, state: communityState });
+    } catch (error) {
+      console.error('Error in POST /api/communities/reset:', error);
+      res.status(500).json({ error: 'Internal Server Error' });
+    }
+  });
+
+  // Fallback for any other /api routes to avoid returning HTML
+  app.all("/api/*", (req, res) => {
+    console.warn(`[${new Date().toISOString()}] 404 for API route: ${req.originalUrl}`);
+    res.status(404).json({ error: `API route not found: ${req.originalUrl}` });
   });
 
   // Vite middleware for development
