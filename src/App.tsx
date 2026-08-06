@@ -51,12 +51,19 @@ const getInitialCommunities = (): Community[] => {
 };
 
 export default function App() {
+  const isTvRoute = () => {
+    const path = window.location.pathname;
+    const search = window.location.search;
+    const hash = window.location.hash;
+    return path === '/tv' || path.endsWith('/tv') || search.includes('view=tv') || hash === '#tv' || hash === '#/tv';
+  };
+
   const [view, setView] = useState<'hub' | 'tv'>(() => {
-    return window.location.pathname === '/tv' ? 'tv' : 'hub';
+    return isTvRoute() ? 'tv' : 'hub';
   });
 
   const [user, setUser] = React.useState<{ id: string; name: string } | null>(() => {
-    if (window.location.pathname === '/tv') return { id: 'tv', name: 'TV Monitor' };
+    if (isTvRoute()) return { id: 'tv', name: 'TV Monitor' };
     const saved = localStorage.getItem('dc_user');
     return saved ? JSON.parse(saved) : null;
   });
@@ -85,9 +92,24 @@ export default function App() {
         
         if (!isMounted) return;
 
+        const contentType = res.headers.get("content-type");
+        // Detect static hosting fallback (e.g. Netlify 404 returning HTML)
+        if (res.status === 404 || (contentType && contentType.includes("text/html"))) {
+          setIsLoading(false);
+          setFetchError(null);
+          setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
+          return;
+        }
+
         if (!res.ok) {
           const text = await res.text();
-          // If we get an error response, try to parse it as JSON if possible
+          if (text.includes('<!DOCTYPE') || text.includes('<html')) {
+            setIsLoading(false);
+            setFetchError(null);
+            setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
+            return;
+          }
+
           let errorMessage = `Server responded with ${res.status}`;
           try {
             const errorJson = JSON.parse(text);
@@ -98,9 +120,11 @@ export default function App() {
           throw new Error(errorMessage);
         }
         
-        const contentType = res.headers.get("content-type");
         if (!contentType || !contentType.includes("application/json")) {
-          throw new Error(`Unexpected response format: ${contentType || 'text/plain'}`);
+          setIsLoading(false);
+          setFetchError(null);
+          setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
+          return;
         }
         
         const data = await res.json();
@@ -113,25 +137,25 @@ export default function App() {
           }
           setIsLoading(false);
           setFetchError(null);
-          retryCount = 0; // Reset retry count upon success
+          retryCount = 0;
         }
       } catch (err) {
         if (isMounted) {
+          const rawMsg = err instanceof Error ? err.message : 'Load failed';
+          if (rawMsg.includes('Unexpected response format') || rawMsg.includes('text/html') || rawMsg.includes('404') || rawMsg.includes('<!DOCTYPE')) {
+            setFetchError(null);
+            setIsLoading(false);
+            setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
+            return;
+          }
+
           if (retryCount < MAX_RETRIES) {
             retryCount++;
             setTimeout(fetchState, Math.pow(2, retryCount - 1) * 1000);
             return;
           }
 
-          const rawMsg = err instanceof Error ? err.message : 'Load failed';
-          let friendlyMsg = rawMsg;
-          if (rawMsg.includes('Unexpected response format') || rawMsg.includes('text/html') || rawMsg.includes('non-JSON')) {
-            friendlyMsg = 'Backend API returned HTML instead of JSON (Running with local cached state)';
-          } else if (rawMsg.includes('Failed to fetch')) {
-            friendlyMsg = 'Unable to connect to backend server (Offline mode active)';
-          }
-
-          setFetchError(friendlyMsg);
+          setFetchError(rawMsg);
           setIsLoading(false);
           setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
         }
