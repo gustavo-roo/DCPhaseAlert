@@ -44,6 +44,8 @@ async function startServer() {
   app.use((req, res, next) => {
     if (req.url.startsWith('/api')) {
       console.log(`[${new Date().toISOString()}] Incoming Request: ${req.method} ${req.url}`);
+      // Ensure we don't cache API responses that might be erroring
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     }
     next();
   });
@@ -57,7 +59,6 @@ async function startServer() {
   app.get(["/api/communities", "/api/communities/"], (req, res) => {
     try {
       console.log(`[${new Date().toISOString()}] GET ${req.originalUrl} - Returning state`);
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.json(communityState);
     } catch (error) {
       console.error('Error in GET /api/communities:', error);
@@ -98,7 +99,11 @@ async function startServer() {
   // Fallback for any other /api routes to avoid returning HTML
   app.all("/api/*", (req, res) => {
     console.warn(`[${new Date().toISOString()}] 404 for API route: ${req.originalUrl}`);
-    res.status(404).json({ error: `API route not found: ${req.originalUrl}` });
+    res.status(404).json({ 
+      error: `API route not found: ${req.originalUrl}`,
+      method: req.method,
+      timestamp: new Date().toISOString()
+    });
   });
 
   // Vite middleware for development
@@ -108,12 +113,27 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: "spa",
     });
+    
+    // Add a middleware before vite to check for missed API calls
+    app.use((req, res, next) => {
+      if (req.url.startsWith('/api')) {
+        console.error(`[CRITICAL] API request reached Vite fallback: ${req.method} ${req.url}`);
+        return res.status(404).json({ error: 'API route missed handlers and reached Vite' });
+      }
+      next();
+    });
+
     app.use(vite.middlewares);
   } else {
     console.log('Running in production mode...');
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
+    
     app.get('*', (req, res) => {
+      if (req.url.startsWith('/api')) {
+        console.error(`[CRITICAL] API request reached Production fallback: ${req.method} ${req.url}`);
+        return res.status(404).json({ error: 'API route missed handlers and reached Production fallback' });
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

@@ -16,7 +16,8 @@ import {
   Copy,
   Check,
   Lock,
-  LogOut
+  LogOut,
+  Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Status, Community, STATUS_COLORS, COMMUNITIES, USER_REGISTRY } from './types';
@@ -24,6 +25,30 @@ import { Status, Community, STATUS_COLORS, COMMUNITIES, USER_REGISTRY } from './
 const DisneyNavy = '#002244';
 const LOGO_URL = 'https://sites.disney.com/app/uploads/sites/77/2024/11/Disney-Central-scaled.jpg'; // Disney Central logo URL
 const EMAIL_LOGO_URL = 'https://www.pngkey.com/png/full/230-2305796_book-your-ticket-monsters-inc-characters.png'; // Monsters Inc logo for email
+
+const getDefaultCommunities = (): Community[] => {
+  return COMMUNITIES.map(name => ({
+    id: name.toLowerCase().replace(/\s+/g, '-'),
+    name,
+    status: 'Green - Normal' as Status,
+    isUpdated: false
+  }));
+};
+
+const getInitialCommunities = (): Community[] => {
+  try {
+    const saved = localStorage.getItem('dc_communities_cache');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to parse cached communities:', e);
+  }
+  return getDefaultCommunities();
+};
 
 export default function App() {
   const [view, setView] = useState<'hub' | 'tv'>(() => {
@@ -38,14 +63,17 @@ export default function App() {
   const [idInput, setIdInput] = useState('');
   const [loginError, setLoginError] = useState(false);
 
-  const [communities, setCommunities] = useState<Community[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [communities, setCommunities] = useState<Community[]>(getInitialCommunities);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Fetch initial state and poll for updates
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
+    let retryCount = 0;
+    const MAX_RETRIES = 3;
+
     const fetchState = async () => {
       try {
         const res = await fetch('/api/communities', { 
@@ -59,35 +87,59 @@ export default function App() {
 
         if (!res.ok) {
           const text = await res.text();
-          throw new Error(`Server responded with ${res.status}: ${text.slice(0, 50)}`);
+          // If we get an error response, try to parse it as JSON if possible
+          let errorMessage = `Server responded with ${res.status}`;
+          try {
+            const errorJson = JSON.parse(text);
+            if (errorJson.error) errorMessage = errorJson.error;
+          } catch {
+            errorMessage = `${errorMessage}: ${text.slice(0, 50)}`;
+          }
+          throw new Error(errorMessage);
         }
         
         const contentType = res.headers.get("content-type");
         if (!contentType || !contentType.includes("application/json")) {
-          const text = await res.text();
-          throw new Error(`Invalid response type: ${contentType}`);
+          throw new Error(`Unexpected response format: ${contentType || 'text/plain'}`);
         }
         
         const data = await res.json();
-        if (isMounted) {
+        if (isMounted && Array.isArray(data)) {
           setCommunities(data);
+          try {
+            localStorage.setItem('dc_communities_cache', JSON.stringify(data));
+          } catch (e) {
+            console.warn('Failed to cache communities:', e);
+          }
           setIsLoading(false);
           setFetchError(null);
+          retryCount = 0; // Reset retry count upon success
         }
       } catch (err) {
         if (isMounted) {
-          console.error('Fetch error:', err);
-          setFetchError(err instanceof Error ? err.message : 'Load failed');
-          // If it's the first load and it fails, we move out of loading state to show error
-          if (communities.length === 0) {
-            setIsLoading(false);
+          if (retryCount < MAX_RETRIES) {
+            retryCount++;
+            setTimeout(fetchState, Math.pow(2, retryCount - 1) * 1000);
+            return;
           }
+
+          const rawMsg = err instanceof Error ? err.message : 'Load failed';
+          let friendlyMsg = rawMsg;
+          if (rawMsg.includes('Unexpected response format') || rawMsg.includes('text/html') || rawMsg.includes('non-JSON')) {
+            friendlyMsg = 'Backend API returned HTML instead of JSON (Running with local cached state)';
+          } else if (rawMsg.includes('Failed to fetch')) {
+            friendlyMsg = 'Unable to connect to backend server (Offline mode active)';
+          }
+
+          setFetchError(friendlyMsg);
+          setIsLoading(false);
+          setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
         }
       }
     };
 
     fetchState();
-    const interval = setInterval(fetchState, 5000);
+    const interval = setInterval(fetchState, 10000); // Poll every 10 seconds
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -96,6 +148,22 @@ export default function App() {
 
   const [showModal, setShowModal] = useState(false);
   const [copiedType, setCopiedType] = useState<'email' | 'teams' | 'rich' | 'teams-rich' | 'teams-text' | null>(null);
+  const [showSentNotification, setShowSentNotification] = useState(false);
+
+  const triggerPhasesSent = () => {
+    setShowSentNotification(true);
+    setShowModal(false);
+    resetUpdates();
+  };
+
+  useEffect(() => {
+    if (showSentNotification) {
+      const timer = setTimeout(() => {
+        setShowSentNotification(false);
+      }, 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [showSentNotification]);
 
   const updatedCommunities = useMemo(() => {
     const priority: Record<string, number> = {
@@ -127,6 +195,7 @@ export default function App() {
     // Provide feedback that it was copied
     setCopiedType('rich');
     setTimeout(() => setCopiedType(null), 3000);
+    triggerPhasesSent();
   };
 
   const generateTeamsTextHTML = () => {
@@ -242,29 +311,48 @@ export default function App() {
 
   const handleStatusChange = async (id: string, newStatus: Status) => {
     // Optimistic update
-    setCommunities(prev => prev.map(c => 
-      c.id === id ? { ...c, status: newStatus, isUpdated: true } : c
-    ));
+    setCommunities(prev => {
+      const next = prev.map(c => 
+        c.id === id ? { ...c, status: newStatus, isUpdated: true } : c
+      );
+      try {
+        localStorage.setItem('dc_communities_cache', JSON.stringify(next));
+      } catch (e) {
+        console.warn('Failed to cache update:', e);
+      }
+      return next;
+    });
 
     try {
       await fetch('/api/communities/update', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({ id, status: newStatus })
       });
     } catch (err) {
-      console.error('Failed to update status:', err);
+      console.warn('Failed to update status on server:', err);
     }
   };
 
   const resetUpdates = async () => {
     // Optimistic reset
-    setCommunities(prev => prev.map(c => ({ ...c, isUpdated: false })));
+    setCommunities(prev => {
+      const next = prev.map(c => ({ ...c, isUpdated: false }));
+      try {
+        localStorage.setItem('dc_communities_cache', JSON.stringify(next));
+      } catch (e) {
+        console.warn('Failed to cache reset:', e);
+      }
+      return next;
+    });
 
     try {
-      await fetch('/api/communities/reset', { method: 'POST' });
+      await fetch('/api/communities/reset', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+      });
     } catch (err) {
-      console.error('Failed to reset updates:', err);
+      console.warn('Failed to reset updates on server:', err);
     }
   };
 
@@ -751,10 +839,10 @@ export default function App() {
               <div className="flex items-center gap-3 w-full md:w-auto">
                 <button 
                   onClick={() => setShowModal(true)}
-                  className="flex-1 md:flex-none bg-[#002244] hover:bg-[#003366] text-white px-8 py-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg shadow-blue-900/20"
+                  className="flex-1 md:flex-none bg-[#002244] hover:bg-[#003366] text-white px-7 py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg shadow-blue-900/20 text-sm"
                 >
-                  <Send className="w-5 h-5" />
-                  Review & Send
+                  <Send className="w-4 h-4" />
+                  Review & Distribute Message
                 </button>
               </div>
             </div>
@@ -875,38 +963,167 @@ export default function App() {
               <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
                 <button 
                   onClick={() => setShowModal(false)}
-                  className="px-6 py-2 rounded-lg font-bold text-slate-600 hover:bg-slate-200 transition-colors"
+                  className="px-6 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition-colors"
                 >
                   Close
                 </button>
                 <button 
-                  onClick={() => {
-                    resetUpdates();
-                    setShowModal(false);
-                  }}
-                  className="px-6 py-2 rounded-lg font-bold bg-[#002244] text-white hover:bg-[#003366] transition-colors"
+                  onClick={triggerPhasesSent}
+                  className="px-6 py-2.5 rounded-xl font-extrabold bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-300 hover:from-amber-300 hover:to-yellow-200 text-[#002244] shadow-lg shadow-amber-400/20 transition-all active:scale-95 flex items-center gap-2"
                 >
-                  Mark as Sent
+                  <Sparkles className="w-4 h-4 text-[#002244]" />
+                  Send Phases!
                 </button>
               </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+
+      {/* Sparkling Phases Sent Notification */}
+      <AnimatePresence>
+        {showSentNotification && (
+          <SparkleSentNotification onClose={() => setShowSentNotification(false)} />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
+
+const SparkleSentNotification: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="absolute inset-0 bg-slate-950/50 backdrop-blur-sm pointer-events-auto"
+        onClick={onClose}
+      />
+      <motion.div
+        initial={{ scale: 0.6, opacity: 0, y: 30 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.8, opacity: 0, y: -20 }}
+        transition={{ type: 'spring', stiffness: 450, damping: 24 }}
+        className="relative z-10 pointer-events-auto bg-gradient-to-b from-[#002244] via-[#001c38] to-[#001226] text-white rounded-3xl p-8 max-w-sm w-full text-center shadow-[0_25px_60px_rgba(0,34,68,0.7)] border border-blue-400/30 overflow-hidden"
+      >
+        {/* Background glow and sparkles */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <motion.div 
+            animate={{ rotate: 360 }}
+            transition={{ repeat: Infinity, duration: 25, ease: 'linear' }}
+            className="absolute -top-16 -right-16 w-40 h-40 bg-amber-400/15 rounded-full blur-3xl"
+          />
+          <motion.div 
+            animate={{ rotate: -360 }}
+            transition={{ repeat: Infinity, duration: 20, ease: 'linear' }}
+            className="absolute -bottom-16 -left-16 w-40 h-40 bg-blue-400/20 rounded-full blur-3xl"
+          />
+
+          {/* Floating animated sparkles */}
+          {[
+            { top: '15%', left: '18%', delay: 0 },
+            { top: '20%', right: '16%', delay: 0.3 },
+            { top: '65%', left: '14%', delay: 0.6 },
+            { top: '70%', right: '18%', delay: 0.9 },
+            { top: '38%', left: '10%', delay: 0.4 },
+            { top: '42%', right: '10%', delay: 0.8 },
+          ].map((pos, idx) => (
+            <motion.div
+              key={idx}
+              style={pos}
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ 
+                scale: [0, 1.4, 0.7, 1.3, 0],
+                opacity: [0, 1, 0.6, 1, 0],
+                rotate: [0, 90, 180]
+              }}
+              transition={{
+                repeat: Infinity,
+                duration: 2.2,
+                delay: pos.delay,
+                ease: "easeInOut"
+              }}
+              className="absolute text-amber-300 pointer-events-none drop-shadow-[0_0_8px_rgba(252,211,77,0.8)]"
+            >
+              <Sparkles className="w-5 h-5" />
+            </motion.div>
+          ))}
+        </div>
+
+        {/* Central Pulsing Sparkle Icon Badge */}
+        <div className="relative z-10 flex justify-center mb-5">
+          <motion.div
+            initial={{ scale: 0, rotate: -30 }}
+            animate={{ scale: 1, rotate: 0 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 15 }}
+            className="relative bg-gradient-to-tr from-amber-400 via-yellow-300 to-amber-200 text-[#002244] p-4.5 rounded-2xl shadow-[0_0_35px_rgba(251,191,36,0.6)] border border-amber-200/60"
+          >
+            <Sparkles className="w-10 h-10 text-[#002244]" />
+            <motion.div
+              animate={{ scale: [1, 1.4, 1], opacity: [0.5, 0, 0.5] }}
+              transition={{ repeat: Infinity, duration: 1.8 }}
+              className="absolute inset-0 bg-amber-300/40 rounded-2xl -z-10"
+            />
+          </motion.div>
+        </div>
+
+        {/* Text Details */}
+        <div className="relative z-10 space-y-2">
+          <div className="inline-flex items-center gap-1.5 px-3.5 py-1 bg-amber-400/20 text-amber-300 text-[11px] font-black uppercase tracking-widest rounded-full border border-amber-400/30">
+            <Sparkles className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '4s' }} />
+            Notification
+          </div>
+          <h2 className="text-3xl font-black text-white tracking-tight drop-shadow-md">
+            Phases Sent!
+          </h2>
+          <p className="text-slate-200 text-sm font-medium leading-relaxed px-2 pt-1">
+            The community phase alert updates have been successfully sent out.
+          </p>
+        </div>
+
+        {/* Action Button */}
+        <div className="relative z-10 mt-6">
+          <button
+            onClick={onClose}
+            className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-300 hover:from-amber-300 hover:to-yellow-200 text-[#002244] font-black py-3 px-6 rounded-xl shadow-lg shadow-amber-400/20 transition-all active:scale-95 text-sm"
+          >
+            Awesome! ✨
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
 
 interface CommunityCardProps {
   community: Community;
   onStatusChange: (id: string, status: Status) => void;
 }
 
+const STATUS_ORDER: Record<Status, number> = {
+  'Green - Normal': 0,
+  'Yellow - High Volume': 1,
+  'Red - Critical': 2,
+};
+
 const CommunityCard: React.FC<CommunityCardProps> = ({ community, onStatusChange }) => {
+  const [prevStatus, setPrevStatus] = useState<Status>(community.status);
+  const [slideDir, setSlideDir] = useState<number>(0);
+
+  useEffect(() => {
+    if (community.status !== prevStatus) {
+      const oldIdx = STATUS_ORDER[prevStatus] ?? 0;
+      const newIdx = STATUS_ORDER[community.status] ?? 0;
+      setSlideDir(newIdx > oldIdx ? 1 : -1);
+      setPrevStatus(community.status);
+    }
+  }, [community.status, prevStatus]);
+
   const statusGlow = {
-    'Green - Normal': 'shadow-[0_0_15px_rgba(0,138,0,0.1)]',
-    'Yellow - High Volume': 'shadow-[0_0_15px_rgba(255,204,0,0.15)]',
-    'Red - Critical': 'shadow-[0_0_15px_rgba(210,18,46,0.2)]',
+    'Green - Normal': 'hover:shadow-[0_12px_28px_rgba(0,138,0,0.18)]',
+    'Yellow - High Volume': 'hover:shadow-[0_12px_28px_rgba(255,204,0,0.22)]',
+    'Red - Critical': 'hover:shadow-[0_12px_28px_rgba(210,18,46,0.28)]',
   };
 
   const accentBorder = {
@@ -918,7 +1135,9 @@ const CommunityCard: React.FC<CommunityCardProps> = ({ community, onStatusChange
   return (
     <motion.div 
       layout
-      className={`bg-white rounded-xl p-5 border border-slate-200 transition-all duration-300 ${statusGlow[community.status]} ${accentBorder[community.status]} ${community.isUpdated ? 'ring-2 ring-blue-400 ring-offset-2' : ''}`}
+      whileHover={{ y: -6, scale: 1.015 }}
+      transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+      className={`bg-white rounded-xl p-5 border border-slate-200/90 shadow-sm transition-shadow duration-300 ${statusGlow[community.status]} ${accentBorder[community.status]} ${community.isUpdated ? 'ring-2 ring-blue-400 ring-offset-2' : ''}`}
     >
       <div className="flex justify-between items-start mb-4">
         <h3 className="font-bold text-slate-800 leading-tight">{community.name}</h3>
@@ -930,26 +1149,44 @@ const CommunityCard: React.FC<CommunityCardProps> = ({ community, onStatusChange
       </div>
 
       <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-slate-500 mb-1">
-          <StatusIcon status={community.status} size={16} />
-          <span style={{ color: STATUS_COLORS[community.status] }}>{community.status}</span>
+        <div className="overflow-hidden py-0.5">
+          <motion.div 
+            key={community.status}
+            initial={{ x: slideDir * 28, opacity: 0.3 }}
+            animate={{ x: 0, opacity: 1 }}
+            transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+            className="flex items-center gap-2 text-sm font-medium text-slate-500 mb-1"
+          >
+            <StatusIcon status={community.status} size={16} />
+            <span className="font-bold" style={{ color: STATUS_COLORS[community.status] }}>
+              {community.status}
+            </span>
+          </motion.div>
         </div>
 
-        <div className="grid grid-cols-3 gap-1 bg-slate-100 p-1 rounded-lg">
-          {(['Green - Normal', 'Yellow - High Volume', 'Red - Critical'] as Status[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => onStatusChange(community.id, s)}
-              className={`py-1.5 rounded-md text-[10px] font-bold transition-all ${
-                community.status === s 
-                  ? 'bg-white shadow-sm scale-105 z-10' 
-                  : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200/50'
-              }`}
-              style={community.status === s ? { color: STATUS_COLORS[s] } : {}}
-            >
-              {s === 'Green - Normal' ? 'NORM' : s === 'Yellow - High Volume' ? 'HIGH' : 'CRIT'}
-            </button>
-          ))}
+        <div className="relative grid grid-cols-3 gap-1 bg-slate-100 p-1 rounded-lg select-none">
+          {(['Green - Normal', 'Yellow - High Volume', 'Red - Critical'] as Status[]).map((s) => {
+            const isActive = community.status === s;
+            return (
+              <button
+                key={s}
+                onClick={() => onStatusChange(community.id, s)}
+                className={`relative py-1.5 rounded-md text-[10px] font-bold transition-colors z-10 ${
+                  isActive ? 'text-slate-900' : 'text-slate-400 hover:text-slate-700'
+                }`}
+                style={isActive ? { color: STATUS_COLORS[s] } : {}}
+              >
+                {isActive && (
+                  <motion.div
+                    layoutId={`phase-pill-${community.id}`}
+                    className="absolute inset-0 bg-white rounded-md shadow-md border border-slate-200/80 -z-10"
+                    transition={{ type: 'spring', stiffness: 500, damping: 32 }}
+                  />
+                )}
+                {s === 'Green - Normal' ? 'NORM' : s === 'Yellow - High Volume' ? 'HIGH' : 'CRIT'}
+              </button>
+            );
+          })}
         </div>
       </div>
     </motion.div>
