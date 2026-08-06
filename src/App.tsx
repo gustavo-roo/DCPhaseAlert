@@ -219,7 +219,6 @@ export default function App() {
     // Provide feedback that it was copied
     setCopiedType('rich');
     setTimeout(() => setCopiedType(null), 3000);
-    triggerPhasesSent();
   };
 
   const generateTeamsTextHTML = () => {
