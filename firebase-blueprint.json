@@ -1,0 +1,18 @@
+{
+  "entities": {
+    "communities": {
+      "title": "Community",
+      "description": "Disney Central Phase Tracker Communities",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "manager": { "type": "string" },
+        "code": { "type": "string" },
+        "status": { "type": "string" },
+        "isUpdated": { "type": "boolean" }
+      },
+      "required": ["id", "name", "status"]
+    }
+  }
+}

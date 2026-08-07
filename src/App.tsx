@@ -4,6 +4,8 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
+import { db } from './firebase';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { 
   CheckCircle2, 
   AlertTriangle, 
@@ -73,100 +75,117 @@ export default function App() {
   const [communities, setCommunities] = useState<Community[]>(getInitialCommunities);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Fetch initial state and poll for updates
+  // Helper to notify other tabs/windows in the same browser
+  const notifySyncChannels = (updatedCommunities: Community[]) => {
+    try {
+      localStorage.setItem('dc_communities_cache', JSON.stringify(updatedCommunities));
+    } catch (e) {
+      console.warn('Failed to cache state:', e);
+    }
+    try {
+      const channel = new BroadcastChannel('dc_phases_sync');
+      channel.postMessage({ type: 'PHASES_UPDATE', data: updatedCommunities });
+      channel.close();
+    } catch (e) {
+      // Ignore if BroadcastChannel is unsupported or blocked
+    }
+  };
+
+  // Cross-tab and window real-time sync listener
+  useEffect(() => {
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel('dc_phases_sync');
+      bc.onmessage = (event) => {
+        if (event.data && event.data.type === 'PHASES_UPDATE' && Array.isArray(event.data.data)) {
+          setCommunities(event.data.data);
+        }
+      };
+    } catch (e) {}
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'dc_communities_cache' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setCommunities(parsed);
+          }
+        } catch (err) {}
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+
+    return () => {
+      if (bc) bc.close();
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
+  // Real-time Firestore synchronization for cross-user and cross-device persistence
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
-    let isMounted = true;
-    let retryCount = 0;
-    const MAX_RETRIES = 3;
+    let unsubscribe: (() => void) | null = null;
+    try {
+      const docRef = doc(db, 'appState', 'communities');
+      unsubscribe = onSnapshot(
+        docRef,
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data && Array.isArray(data.items) && data.items.length > 0) {
+              setCommunities(data.items);
+              notifySyncChannels(data.items);
+              setIsLoading(false);
+              setFetchError(null);
+            }
+          } else {
+            // First time seeding Firestore doc
+            const initial = getInitialCommunities();
+            setDoc(docRef, { items: initial }).catch(err => console.warn('Firestore seed error:', err));
+          }
+        },
+        (error) => {
+          console.warn('Firestore real-time listener error:', error);
+        }
+      );
+    } catch (err) {
+      console.warn('Failed to attach Firestore listener:', err);
+    }
 
+    // Secondary API polling fallback for traditional express backends
+    let isMounted = true;
     const fetchState = async () => {
       try {
         const res = await fetch('/api/communities', { 
           cache: 'no-store',
-          headers: {
-            'Accept': 'application/json'
-          }
+          headers: { 'Accept': 'application/json' }
         });
-        
         if (!isMounted) return;
-
         const contentType = res.headers.get("content-type");
-        // Detect static hosting fallback (e.g. Netlify 404 returning HTML)
         if (res.status === 404 || (contentType && contentType.includes("text/html"))) {
-          setIsLoading(false);
-          setFetchError(null);
-          setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
           return;
         }
-
-        if (!res.ok) {
-          const text = await res.text();
-          if (text.includes('<!DOCTYPE') || text.includes('<html')) {
-            setIsLoading(false);
-            setFetchError(null);
-            setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
-            return;
+        if (res.ok && contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            setCommunities(data);
+            notifySyncChannels(data);
           }
-
-          let errorMessage = `Server responded with ${res.status}`;
-          try {
-            const errorJson = JSON.parse(text);
-            if (errorJson.error) errorMessage = errorJson.error;
-          } catch {
-            errorMessage = `${errorMessage}: ${text.slice(0, 50)}`;
-          }
-          throw new Error(errorMessage);
-        }
-        
-        if (!contentType || !contentType.includes("application/json")) {
-          setIsLoading(false);
-          setFetchError(null);
-          setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
-          return;
-        }
-        
-        const data = await res.json();
-        if (isMounted && Array.isArray(data)) {
-          setCommunities(data);
-          try {
-            localStorage.setItem('dc_communities_cache', JSON.stringify(data));
-          } catch (e) {
-            console.warn('Failed to cache communities:', e);
-          }
-          setIsLoading(false);
-          setFetchError(null);
-          retryCount = 0;
         }
       } catch (err) {
-        if (isMounted) {
-          const rawMsg = err instanceof Error ? err.message : 'Load failed';
-          if (rawMsg.includes('Unexpected response format') || rawMsg.includes('text/html') || rawMsg.includes('404') || rawMsg.includes('<!DOCTYPE')) {
-            setFetchError(null);
-            setIsLoading(false);
-            setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
-            return;
-          }
-
-          if (retryCount < MAX_RETRIES) {
-            retryCount++;
-            setTimeout(fetchState, Math.pow(2, retryCount - 1) * 1000);
-            return;
-          }
-
-          setFetchError(rawMsg);
-          setIsLoading(false);
-          setCommunities(prev => prev.length > 0 ? prev : getInitialCommunities());
-        }
+        // Silent fallback to Firestore
       }
     };
 
     fetchState();
-    const interval = setInterval(fetchState, 10000); // Poll every 10 seconds
+    const interval = setInterval(fetchState, 5000);
+
     return () => {
       isMounted = false;
       clearInterval(interval);
+      if (unsubscribe) unsubscribe();
     };
   }, []);
 
@@ -334,48 +353,72 @@ export default function App() {
 
   const handleStatusChange = async (id: string, newStatus: Status) => {
     // Optimistic update
+    let nextState: Community[] = [];
     setCommunities(prev => {
-      const next = prev.map(c => 
+      nextState = prev.map(c => 
         c.id === id ? { ...c, status: newStatus, isUpdated: true } : c
       );
-      try {
-        localStorage.setItem('dc_communities_cache', JSON.stringify(next));
-      } catch (e) {
-        console.warn('Failed to cache update:', e);
-      }
-      return next;
+      notifySyncChannels(nextState);
+      return nextState;
     });
 
+    // Instant cloud persistence with Firestore (works everywhere including Netlify)
     try {
-      await fetch('/api/communities/update', {
+      const docRef = doc(db, 'appState', 'communities');
+      await setDoc(docRef, { items: nextState }, { merge: true });
+    } catch (err) {
+      console.warn('Failed to save status to Firestore:', err);
+    }
+
+    try {
+      const res = await fetch('/api/communities/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({ id, status: newStatus })
       });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.state && Array.isArray(json.state)) {
+          setCommunities(json.state);
+          notifySyncChannels(json.state);
+        }
+      }
     } catch (err) {
-      console.warn('Failed to update status on server:', err);
+      console.warn('Failed to update status on express server:', err);
     }
   };
 
   const resetUpdates = async () => {
     // Optimistic reset
+    let nextState: Community[] = [];
     setCommunities(prev => {
-      const next = prev.map(c => ({ ...c, isUpdated: false }));
-      try {
-        localStorage.setItem('dc_communities_cache', JSON.stringify(next));
-      } catch (e) {
-        console.warn('Failed to cache reset:', e);
-      }
-      return next;
+      nextState = prev.map(c => ({ ...c, isUpdated: false }));
+      notifySyncChannels(nextState);
+      return nextState;
     });
 
+    // Instant cloud persistence with Firestore (works everywhere including Netlify)
     try {
-      await fetch('/api/communities/reset', { 
+      const docRef = doc(db, 'appState', 'communities');
+      await setDoc(docRef, { items: nextState }, { merge: true });
+    } catch (err) {
+      console.warn('Failed to reset updates in Firestore:', err);
+    }
+
+    try {
+      const res = await fetch('/api/communities/reset', { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
       });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.state && Array.isArray(json.state)) {
+          setCommunities(json.state);
+          notifySyncChannels(json.state);
+        }
+      }
     } catch (err) {
-      console.warn('Failed to reset updates on server:', err);
+      console.warn('Failed to reset updates on express server:', err);
     }
   };
 
