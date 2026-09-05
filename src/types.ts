@@ -40,9 +40,10 @@ export const USER_REGISTRY: Record<string, string> = {
   '01604775': 'Samantha',
   '00550324': 'Jules',
   '': 'Anderson',
-  '': 'Sarah W.',
+  '00486597': 'Sarah W.',
   '': 'Jess',
   '00989910': 'Sarah S',
+  '01633623': 'Drea',
   '01021977': 'Chelsea',
  
   '11223344': 'Disney Admin',
