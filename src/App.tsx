@@ -23,7 +23,8 @@ import {
   Maximize2,
   Minimize2,
   Tv,
-  Table
+  Table,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Status, Community, STATUS_COLORS, COMMUNITIES, USER_REGISTRY, PhaseCallLog } from './types';
@@ -59,10 +60,11 @@ const getInitialCommunities = (): Community[] => {
 
 export default function App() {
   const isTvRoute = () => {
+    if (typeof window === 'undefined') return false;
     const path = window.location.pathname;
     const search = window.location.search;
     const hash = window.location.hash;
-    return path === '/tv' || path.endsWith('/tv') || search.includes('view=tv') || hash === '#tv' || hash === '#/tv';
+    return path === '/tv' || path === '/tv/' || path.endsWith('/tv') || path.endsWith('/tv/') || search.includes('view=tv') || hash === '#tv' || hash === '#/tv';
   };
 
   const [view, setView] = useState<'hub' | 'tv'>(() => {
@@ -119,11 +121,23 @@ export default function App() {
       }
     };
 
+    const handleRouteChange = () => {
+      if (isTvRoute()) {
+        setView('tv');
+      } else {
+        setView('hub');
+      }
+    };
+
     window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('popstate', handleRouteChange);
+    window.addEventListener('hashchange', handleRouteChange);
 
     return () => {
       if (bc) bc.close();
       window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('popstate', handleRouteChange);
+      window.removeEventListener('hashchange', handleRouteChange);
     };
   }, []);
 
@@ -942,14 +956,17 @@ export default function App() {
                   </span>
                 )}
               </button>
-              <button 
-                onClick={() => setView('tv')}
-                className="flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 active:bg-white/30 rounded-lg transition-colors text-xs font-bold mr-2 border border-white/10 cursor-pointer"
-                title="Switch to TV Monitor Mode"
+              <a 
+                href="/tv"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 active:bg-white/30 rounded-lg transition-colors text-xs font-bold mr-2 border border-white/10 cursor-pointer text-white no-underline select-none"
+                title="Open Live Monitor in a new tab (/tv - No login required)"
               >
                 <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                Monitor Mode
-              </button>
+                <span>Monitor Mode</span>
+                <ExternalLink className="w-3.5 h-3.5 text-blue-200" />
+              </a>
               <button 
                 onClick={resetUpdates}
                 className="p-2 hover:bg-white/10 rounded-full transition-colors"
