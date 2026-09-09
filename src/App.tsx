@@ -1531,10 +1531,10 @@ const TVDashboard: React.FC<TVDashboardProps> = ({
 
           <div className="text-right">
             <div className="text-2xl sm:text-3xl md:text-4xl font-mono font-bold tracking-tight text-white/95 leading-none">
-              {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}
             </div>
-            <div className="text-blue-300 font-bold uppercase tracking-widest text-[8px] sm:text-[9px] mt-1">
-              {currentTime.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+            <div className="text-blue-300 font-medium tracking-normal text-[11px] sm:text-xs md:text-sm mt-1.5">
+              {currentTime.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
             </div>
           </div>
         </div>
