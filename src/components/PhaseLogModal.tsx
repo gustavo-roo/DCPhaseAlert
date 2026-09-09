@@ -5,6 +5,7 @@ import {
   Copy, 
   Check, 
   FileSpreadsheet, 
+  FileText,
   Clock, 
   User, 
   Layers, 
@@ -39,6 +40,20 @@ export const PhaseLogModal: React.FC<PhaseLogModalProps> = ({
     try {
       const date = new Date(isoString);
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+    } catch {
+      return String(isoString);
+    }
+  };
+
+  const formatReportTime = (isoString: string | number) => {
+    try {
+      const date = new Date(isoString);
+      return date.toLocaleTimeString('en-US', { 
+        hour12: false, 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit' 
+      });
     } catch {
       return String(isoString);
     }
@@ -95,21 +110,54 @@ export const PhaseLogModal: React.FC<PhaseLogModalProps> = ({
     setTimeout(() => setCopiedFormat(null), 2500);
   };
 
-  // Copy as a formatted text summary for quick end-of-day email/Teams reports
-  const copyAsReportSummary = () => {
+  // Copy as a formatted text summary for Word documents and end-of-day reports
+  const copyAsReportSummary = async () => {
     if (logs.length === 0) return;
 
-    const todayStr = new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
-    let summary = `DISNEY CENTRAL PHASE ALERT ACTIVITY LOG\nDate: ${todayStr}\nTotal Phase Changes Called: ${logs.length}\n(Red: ${stats.red} | Yellow: ${stats.yellow} | Green: ${stats.green})\n\n`;
-    summary += `TIME\t\tCOMMUNITY\t\tPHASE\t\t\tCALLED BY\n`;
-    summary += `--------------------------------------------------------------------------------\n`;
+    const todayStr = new Date().toLocaleDateString('en-US', { 
+      weekday: 'long', 
+      month: 'long', 
+      day: 'numeric', 
+      year: 'numeric' 
+    });
+    const title = `Summary of phases called on ${todayStr}`;
 
-    logs.forEach(l => {
-      const time = formatTime(l.calledAt || l.timestamp);
-      summary += `${time}\t${l.communityName.padEnd(20)}\t${l.status.padEnd(22)}\t${l.calledBy}\n`;
+    // Chronological order from morning to evening
+    const sortedLogs = [...logs].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+    const lines = sortedLogs.map(l => {
+      const phaseColor = l.status.split(' - ')[0] || l.status;
+      const phaseName = `${phaseColor} Phase`;
+      const time = formatReportTime(l.calledAt || l.timestamp);
+      return `${phaseName} called for ${l.communityName} by ${l.calledBy} at ${time}`;
     });
 
-    navigator.clipboard.writeText(summary);
+    const plainText = `${title}\n\n${lines.join('\n')}`;
+
+    // Clean rich text for Word document pasting
+    const htmlContent = `
+<div style="font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 11pt; color: #1e293b; line-height: 1.5;">
+  <p style="margin: 0 0 12pt 0; font-size: 12pt; font-weight: bold; color: #002244;">${title}</p>
+  ${lines.map(line => `<p style="margin: 0 0 4pt 0; line-height: 1.4;">${line}</p>`).join('')}
+</div>`.trim();
+
+    try {
+      if (navigator.clipboard && window.ClipboardItem) {
+        const textBlob = new Blob([plainText], { type: 'text/plain' });
+        const htmlBlob = new Blob([htmlContent], { type: 'text/html' });
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/plain': textBlob,
+            'text/html': htmlBlob,
+          })
+        ]);
+      } else {
+        await navigator.clipboard.writeText(plainText);
+      }
+    } catch {
+      await navigator.clipboard.writeText(plainText);
+    }
+
     setCopiedFormat('summary');
     setTimeout(() => setCopiedFormat(null), 2500);
   };
@@ -220,9 +268,9 @@ export const PhaseLogModal: React.FC<PhaseLogModalProps> = ({
                   ? 'bg-blue-700 text-white border-blue-700'
                   : 'bg-[#002244] hover:bg-[#001730] text-white border-[#002244] disabled:opacity-50 disabled:pointer-events-none'
               }`}
-              title="Copies text table format suitable for end-of-day reports"
+              title="Copies formatted single lines titled 'Summary of phases called on (Date)' ready to paste into Word"
             >
-              {copiedFormat === 'summary' ? <Check className="w-3.5 h-3.5 text-white" /> : <FileSpreadsheet className="w-3.5 h-3.5 text-blue-200" />}
+              {copiedFormat === 'summary' ? <Check className="w-3.5 h-3.5 text-white" /> : <FileText className="w-3.5 h-3.5 text-blue-200" />}
               {copiedFormat === 'summary' ? 'Report Copied!' : 'Copy End-of-Day Report'}
             </button>
           </div>
