@@ -7,6 +7,18 @@ export interface Community {
   isUpdated: boolean;
 }
 
+export interface PhaseCallLog {
+  id: string;
+  communityId: string;
+  communityName: string;
+  status: Status;
+  calledBy: string;
+  calledById?: string;
+  calledAt: string; // ISO string
+  timestamp: number; // epoch ms for sorting/cleanup
+  dateStr: string; // YYYY-MM-DD in EST
+}
+
 export const STATUS_COLORS = {
   'Green - Normal': '#008A00',
   'Yellow - High Volume': '#FFCC00',

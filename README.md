@@ -13,7 +13,8 @@ A real-time, collaborative monitoring tool designed to track and communicate ope
 - **Automated Reporting:** Generate professionally formatted status reports for:
   - **Email:** Clean HTML format.
   - **Microsoft Teams:** Adaptive Card and Rich Text formats.
-- **Automated Midnight Reset:** Automatically resets all statuses to "Green - Normal" every day at 12:00 AM EST.
+- **Daily Phase Call History Log:** Real-time chronological audit table recording all phases called during the day (coordinator name, community, timestamp, phase color, and status code). Features 1-click clipboard copying formatted directly for Microsoft Excel, Google Sheets, or email/Teams end-of-day reports.
+- **Automated Midnight Reset:** Automatically resets all statuses to "Green - Normal" and flushes the daily phase log every day at 12:00 AM EST.
 - **Secure Access:** ID-based login system to ensure only authorized personnel can view or modify the dashboard.
 
 ## 🛠️ Tech Stack

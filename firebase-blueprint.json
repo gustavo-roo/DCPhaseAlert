@@ -13,6 +13,23 @@
         "isUpdated": { "type": "boolean" }
       },
       "required": ["id", "name", "status"]
+    },
+    "dailyPhaseLogs": {
+      "title": "DailyPhaseLog",
+      "description": "Record of operational phases called during the day",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "communityId": { "type": "string" },
+        "communityName": { "type": "string" },
+        "status": { "type": "string" },
+        "calledBy": { "type": "string" },
+        "calledById": { "type": "string" },
+        "calledAt": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "dateStr": { "type": "string" }
+      },
+      "required": ["id", "communityName", "status", "calledBy", "timestamp", "dateStr"]
     }
   }
 }

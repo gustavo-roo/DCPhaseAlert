@@ -26,10 +26,35 @@ const getInitialState = () => INITIAL_COMMUNITIES.map(name => ({
 // In-memory state shared across all users
 let communityState = getInitialState();
 
+interface ServerPhaseLog {
+  id: string;
+  communityId: string;
+  communityName: string;
+  status: string;
+  calledBy: string;
+  calledById?: string;
+  calledAt: string;
+  timestamp: number;
+  dateStr: string;
+}
+
+let dailyPhaseLogs: ServerPhaseLog[] = [];
+
+// Helper to get today's date string in Eastern Time
+const getTodayDateStr = () => {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+};
+
 // Schedule reset at midnight every day
 cron.schedule('0 0 * * *', () => {
-  console.log('Midnight Reset: Resetting all communities to Green - Normal');
+  console.log('Midnight Reset: Resetting all communities to Green - Normal and clearing daily phase logs');
   communityState = getInitialState();
+  dailyPhaseLogs = [];
 }, {
   timezone: "America/New_York" // Eastern Time for Florida
 });
@@ -69,17 +94,85 @@ async function startServer() {
   // API: Update a community status
   app.post(["/api/communities/update", "/api/communities/update/"], (req, res) => {
     try {
-      const { id, status } = req.body;
-      console.log(`[${new Date().toISOString()}] POST ${req.originalUrl} - ID: ${id}, Status: ${status}`);
+      const { id, status, calledBy, calledById } = req.body;
+      console.log(`[${new Date().toISOString()}] POST ${req.originalUrl} - ID: ${id}, Status: ${status}, CalledBy: ${calledBy}`);
       if (!id || !status) {
         return res.status(400).json({ error: 'Missing ID or Status' });
       }
+      
+      const targetCommunity = communityState.find(c => c.id === id);
+      const communityName = targetCommunity ? targetCommunity.name : id;
+
       communityState = communityState.map(c => 
         c.id === id ? { ...c, status, isUpdated: true } : c
       );
-      res.json({ success: true, state: communityState });
+
+      // Record in daily phase log
+      const now = new Date();
+      const today = getTodayDateStr();
+      const newLog: ServerPhaseLog = {
+        id: `${id}-${now.getTime()}`,
+        communityId: id,
+        communityName,
+        status,
+        calledBy: calledBy || 'Coordinator',
+        calledById,
+        calledAt: now.toISOString(),
+        timestamp: now.getTime(),
+        dateStr: today
+      };
+
+      // Filter out any stale logs from previous days if midnight cron was missed
+      dailyPhaseLogs = dailyPhaseLogs.filter(l => l.dateStr === today);
+      dailyPhaseLogs.unshift(newLog);
+
+      res.json({ success: true, state: communityState, log: newLog });
     } catch (error) {
       console.error('Error in POST /api/communities/update:', error);
+      res.status(500).json({ error: 'Internal Server Error' });
+    }
+  });
+
+  // API: Get daily phase logs
+  app.get(["/api/phase-logs", "/api/phase-logs/"], (req, res) => {
+    try {
+      const today = getTodayDateStr();
+      // Ensure only today's logs are returned
+      dailyPhaseLogs = dailyPhaseLogs.filter(l => l.dateStr === today);
+      res.json(dailyPhaseLogs);
+    } catch (error) {
+      console.error('Error in GET /api/phase-logs:', error);
+      res.status(500).json({ error: 'Internal Server Error' });
+    }
+  });
+
+  // API: Log a phase change directly
+  app.post(["/api/phase-logs", "/api/phase-logs/"], (req, res) => {
+    try {
+      const { communityId, communityName, status, calledBy, calledById } = req.body;
+      if (!communityName || !status) {
+        return res.status(400).json({ error: 'Missing required log fields' });
+      }
+      const now = new Date();
+      const today = getTodayDateStr();
+      const newLog: ServerPhaseLog = {
+        id: `${communityId || 'cm'}-${now.getTime()}`,
+        communityId: communityId || 'unknown',
+        communityName,
+        status,
+        calledBy: calledBy || 'Coordinator',
+        calledById,
+        calledAt: now.toISOString(),
+        timestamp: now.getTime(),
+        dateStr: today
+      };
+
+      dailyPhaseLogs = dailyPhaseLogs.filter(l => l.dateStr === today);
+      dailyPhaseLogs.unshift(newLog);
+
+      res.json({ success: true, log: newLog, logs: dailyPhaseLogs });
+    } catch (error) {
+      console.error('Error in POST /api/phase-logs:', error);
       res.status(500).json({ error: 'Internal Server Error' });
     }
   });

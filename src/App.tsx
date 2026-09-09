@@ -22,11 +22,12 @@ import {
   Sparkles,
   Maximize2,
   Minimize2,
-  ArrowLeft,
-  Tv
+  Tv,
+  Table
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Status, Community, STATUS_COLORS, COMMUNITIES, USER_REGISTRY } from './types';
+import { Status, Community, STATUS_COLORS, COMMUNITIES, USER_REGISTRY, PhaseCallLog } from './types';
+import { PhaseLogModal } from './components/PhaseLogModal';
 
 const DisneyNavy = '#002244';
 const LOGO_URL = 'https://sites.disney.com/app/uploads/sites/77/2024/11/Disney-Central-scaled.jpg'; // Disney Central logo URL
@@ -194,8 +195,79 @@ export default function App() {
   }, []);
 
   const [showModal, setShowModal] = useState(false);
+  const [showLogModal, setShowLogModal] = useState(false);
+  const [phaseLogs, setPhaseLogs] = useState<PhaseCallLog[]>([]);
   const [copiedType, setCopiedType] = useState<'email' | 'teams' | 'rich' | 'teams-rich' | 'teams-text' | null>(null);
   const [showSentNotification, setShowSentNotification] = useState(false);
+
+  // Helper to compute today's date string in Eastern Time
+  const getTodayEST = () => {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(new Date());
+    } catch {
+      return new Date().toISOString().split('T')[0];
+    }
+  };
+
+  // Real-time synchronization for today's Phase Call Logs
+  useEffect(() => {
+    const today = getTodayEST();
+    let unsubscribe: (() => void) | null = null;
+    try {
+      const docRef = doc(db, 'dailyPhaseLogs', today);
+      unsubscribe = onSnapshot(
+        docRef,
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data && Array.isArray(data.logs)) {
+              setPhaseLogs(data.logs);
+            }
+          }
+        },
+        (error) => {
+          console.warn('Firestore dailyPhaseLogs listener notice:', error);
+        }
+      );
+    } catch (err) {
+      console.warn('Failed to subscribe to dailyPhaseLogs in Firestore:', err);
+    }
+
+    // Secondary Express API polling fallback for phase logs
+    let isMounted = true;
+    const fetchLogs = async () => {
+      try {
+        const res = await fetch('/api/phase-logs', {
+          cache: 'no-store',
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!isMounted) return;
+        const contentType = res.headers.get("content-type");
+        if (res.ok && contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            setPhaseLogs(data);
+          }
+        }
+      } catch (err) {
+        // Silent fallback
+      }
+    };
+
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 8000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
 
   const triggerPhasesSent = () => {
     setShowSentNotification(true);
@@ -366,6 +438,28 @@ export default function App() {
       return nextState;
     });
 
+    const targetCommunity = communities.find(c => c.id === id);
+    const communityName = targetCommunity ? targetCommunity.name : id;
+    const now = new Date();
+    const today = getTodayEST();
+    const callerName = user?.name || 'Coordinator';
+    const callerId = user?.id || '';
+
+    const newLogEntry: PhaseCallLog = {
+      id: `${id}-${now.getTime()}`,
+      communityId: id,
+      communityName,
+      status: newStatus,
+      calledBy: callerName,
+      calledById: callerId,
+      calledAt: now.toISOString(),
+      timestamp: now.getTime(),
+      dateStr: today
+    };
+
+    // Optimistic log update in local state
+    setPhaseLogs(prev => [newLogEntry, ...prev.filter(l => l.dateStr === today)]);
+
     // Instant cloud persistence with Firestore (works everywhere including Netlify)
     try {
       const docRef = doc(db, 'appState', 'communities');
@@ -374,11 +468,25 @@ export default function App() {
       console.warn('Failed to save status to Firestore:', err);
     }
 
+    // Persist log entry in daily Firestore record
+    try {
+      const logDocRef = doc(db, 'dailyPhaseLogs', today);
+      const updatedLogs = [newLogEntry, ...phaseLogs.filter(l => l.dateStr === today)];
+      await setDoc(logDocRef, { logs: updatedLogs, dateStr: today }, { merge: true });
+    } catch (err) {
+      console.warn('Failed to save phase log to Firestore:', err);
+    }
+
     try {
       const res = await fetch('/api/communities/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ id, status: newStatus })
+        body: JSON.stringify({ 
+          id, 
+          status: newStatus,
+          calledBy: callerName,
+          calledById: callerId
+        })
       });
       if (res.ok) {
         const json = await res.json();
@@ -753,13 +861,6 @@ export default function App() {
         communities={communities} 
         isLoading={isLoading} 
         fetchError={fetchError} 
-        onExit={() => {
-          if (window.location.pathname === '/tv' || window.location.search.includes('view=tv')) {
-            window.location.href = '/';
-          } else {
-            setView('hub');
-          }
-        }}
       />
     );
   }
@@ -828,6 +929,19 @@ export default function App() {
             </div>
             <div className="h-8 w-[1px] bg-white/20 hidden md:block" />
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowLogModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 active:bg-white/30 rounded-lg transition-colors text-xs font-bold border border-white/10 cursor-pointer relative"
+                title="View Daily Phase Activity Log"
+              >
+                <Table className="w-4 h-4 text-amber-300" />
+                <span className="hidden sm:inline">Daily Log</span>
+                {phaseLogs.length > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.2 bg-amber-400 text-[#002244] text-[10px] font-black rounded-full">
+                    {phaseLogs.length}
+                  </span>
+                )}
+              </button>
               <button 
                 onClick={() => setView('tv')}
                 className="flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 active:bg-white/30 rounded-lg transition-colors text-xs font-bold mr-2 border border-white/10 cursor-pointer"
@@ -1067,6 +1181,26 @@ export default function App() {
           <SparkleSentNotification onClose={() => setShowSentNotification(false)} />
         )}
       </AnimatePresence>
+
+      {/* Daily Phase Call Activity Log Modal */}
+      <AnimatePresence>
+        {showLogModal && (
+          <PhaseLogModal 
+            isOpen={showLogModal} 
+            onClose={() => setShowLogModal(false)} 
+            logs={phaseLogs}
+            onRefresh={async () => {
+              try {
+                const res = await fetch('/api/phase-logs', { cache: 'no-store' });
+                if (res.ok) {
+                  const data = await res.json();
+                  if (Array.isArray(data)) setPhaseLogs(data);
+                }
+              } catch (e) {}
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1286,14 +1420,12 @@ interface TVDashboardProps {
   communities: Community[];
   isLoading: boolean;
   fetchError: string | null;
-  onExit?: () => void;
 }
 
 const TVDashboard: React.FC<TVDashboardProps> = ({ 
   communities, 
   isLoading, 
-  fetchError,
-  onExit 
+  fetchError
 }) => {
   const [currentTime, setCurrentTime] = useState<Date>(() => new Date());
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -1386,17 +1518,6 @@ const TVDashboard: React.FC<TVDashboardProps> = ({
         {/* Right Controls and Clock */}
         <div className="flex items-center justify-between md:justify-end gap-3 sm:gap-4">
           <div className="flex items-center gap-1.5">
-            {onExit && (
-              <button
-                onClick={onExit}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white/10 hover:bg-white/20 active:bg-white/30 rounded-lg text-xs font-bold transition-all border border-white/10"
-                title="Return to Hub Dashboard"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Hub View</span>
-              </button>
-            )}
-
             <button
               onClick={toggleFullscreen}
               className="p-1.5 bg-white/10 hover:bg-white/20 active:bg-white/30 rounded-lg transition-all border border-white/10 text-white/80 hover:text-white"
