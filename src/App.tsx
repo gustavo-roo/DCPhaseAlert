@@ -228,7 +228,7 @@ export default function App() {
     }
   };
 
-  // Real-time synchronization for today's Phase Call Logs
+  // Real-time synchronization for today's Phase Call Logs and instant dashboard card updates
   useEffect(() => {
     const today = getTodayEST();
     let unsubscribe: (() => void) | null = null;
@@ -241,6 +241,23 @@ export default function App() {
             const data = docSnap.data();
             if (data && Array.isArray(data.logs)) {
               setPhaseLogs(data.logs);
+            }
+            if (data && Array.isArray(data.currentStatuses) && data.currentStatuses.length > 0) {
+              setCommunities(data.currentStatuses);
+              notifySyncChannels(data.currentStatuses);
+            } else if (data && Array.isArray(data.logs) && data.logs.length > 0) {
+              // Auto-reconcile latest called status from logs so cards update instantly
+              setCommunities(prev => {
+                const updated = prev.map(comm => {
+                  const latestLog = data.logs.find((l: PhaseCallLog) => l.communityId === comm.id || l.communityName === comm.name);
+                  if (latestLog && latestLog.status) {
+                    return { ...comm, status: latestLog.status };
+                  }
+                  return comm;
+                });
+                notifySyncChannels(updated);
+                return updated;
+              });
             }
           }
         },
@@ -442,15 +459,12 @@ export default function App() {
   };
 
   const handleStatusChange = async (id: string, newStatus: Status) => {
-    // Optimistic update
-    let nextState: Community[] = [];
-    setCommunities(prev => {
-      nextState = prev.map(c => 
-        c.id === id ? { ...c, status: newStatus, isUpdated: true } : c
-      );
-      notifySyncChannels(nextState);
-      return nextState;
-    });
+    // Synchronous optimistic update to avoid React 18 async state batching race conditions
+    const nextState = communities.map(c => 
+      c.id === id ? { ...c, status: newStatus, isUpdated: true } : c
+    );
+    setCommunities(nextState);
+    notifySyncChannels(nextState);
 
     const targetCommunity = communities.find(c => c.id === id);
     const communityName = targetCommunity ? targetCommunity.name : id;
@@ -474,21 +488,26 @@ export default function App() {
     // Optimistic log update in local state
     setPhaseLogs(prev => [newLogEntry, ...prev.filter(l => l.dateStr === today)]);
 
-    // Instant cloud persistence with Firestore (works everywhere including Netlify)
-    try {
-      const docRef = doc(db, 'appState', 'communities');
-      await setDoc(docRef, { items: nextState }, { merge: true });
-    } catch (err) {
-      console.warn('Failed to save status to Firestore:', err);
-    }
-
-    // Persist log entry in daily Firestore record
+    // Persist to daily Firestore record including currentStatuses (instant real-time sync across devices)
     try {
       const logDocRef = doc(db, 'dailyPhaseLogs', today);
       const updatedLogs = [newLogEntry, ...phaseLogs.filter(l => l.dateStr === today)];
-      await setDoc(logDocRef, { logs: updatedLogs, dateStr: today }, { merge: true });
+      await setDoc(logDocRef, { 
+        logs: updatedLogs, 
+        dateStr: today,
+        currentStatuses: nextState,
+        lastUpdated: now.getTime()
+      }, { merge: true });
     } catch (err) {
       console.warn('Failed to save phase log to Firestore:', err);
+    }
+
+    // Also persist appState doc
+    try {
+      const docRef = doc(db, 'appState', 'communities');
+      await setDoc(docRef, { items: nextState, lastUpdated: now.getTime() }, { merge: true });
+    } catch (err) {
+      console.warn('Failed to save status to Firestore:', err);
     }
 
     try {
@@ -510,25 +529,31 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.warn('Failed to update status on express server:', err);
+      // Netlify static deployment fallback - Firestore already completed real-time sync
     }
   };
 
   const resetUpdates = async () => {
-    // Optimistic reset
-    let nextState: Community[] = [];
-    setCommunities(prev => {
-      nextState = prev.map(c => ({ ...c, isUpdated: false }));
-      notifySyncChannels(nextState);
-      return nextState;
-    });
+    // Synchronous optimistic reset
+    const nextState = communities.map(c => ({ ...c, isUpdated: false }));
+    setCommunities(nextState);
+    notifySyncChannels(nextState);
 
-    // Instant cloud persistence with Firestore (works everywhere including Netlify)
+    const today = getTodayEST();
+
+    // Instant cloud persistence with Firestore
     try {
       const docRef = doc(db, 'appState', 'communities');
-      await setDoc(docRef, { items: nextState }, { merge: true });
+      await setDoc(docRef, { items: nextState, lastUpdated: Date.now() }, { merge: true });
     } catch (err) {
       console.warn('Failed to reset updates in Firestore:', err);
+    }
+
+    try {
+      const logDocRef = doc(db, 'dailyPhaseLogs', today);
+      await setDoc(logDocRef, { currentStatuses: nextState }, { merge: true });
+    } catch (err) {
+      console.warn('Failed to reset currentStatuses in dailyPhaseLogs:', err);
     }
 
     try {
@@ -544,7 +569,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.warn('Failed to reset updates on express server:', err);
+      // Netlify static deployment fallback
     }
   };
 

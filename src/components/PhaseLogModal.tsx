@@ -2,7 +2,6 @@ import React, { useState, useMemo } from 'react';
 import { motion } from 'motion/react';
 import { 
   X, 
-  Copy, 
   Check, 
   FileSpreadsheet, 
   FileText,
@@ -29,7 +28,7 @@ export const PhaseLogModal: React.FC<PhaseLogModalProps> = ({
   logs,
   onRefresh
 }) => {
-  const [copiedFormat, setCopiedFormat] = useState<'tsv' | 'summary' | null>(null);
+  const [copied, setCopied] = useState<boolean>(false);
   const [filterText, setFilterText] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
 
@@ -59,15 +58,6 @@ export const PhaseLogModal: React.FC<PhaseLogModalProps> = ({
     }
   };
 
-  const formatDate = (isoString: string | number) => {
-    try {
-      const date = new Date(isoString);
-      return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-    } catch {
-      return '';
-    }
-  };
-
   // Filtered logs
   const filteredLogs = useMemo(() => {
     return logs.filter(log => {
@@ -89,26 +79,6 @@ export const PhaseLogModal: React.FC<PhaseLogModalProps> = ({
     const green = logs.filter(l => l.status === 'Green - Normal').length;
     return { total: logs.length, red, yellow, green };
   }, [logs]);
-
-  // Copy as Tab-Separated Values (TSV) - Perfect for pasting into Excel, Google Sheets, or Word tables
-  const copyAsSpreadsheet = () => {
-    if (logs.length === 0) return;
-
-    const headers = ['Time', 'Community', 'Phase / Status', 'Called By', 'Date'];
-    const rows = logs.map(l => [
-      formatTime(l.calledAt || l.timestamp),
-      l.communityName,
-      l.status,
-      l.calledBy,
-      formatDate(l.calledAt || l.timestamp)
-    ]);
-
-    const tsvContent = [headers.join('\t'), ...rows.map(r => r.join('\t'))].join('\n');
-
-    navigator.clipboard.writeText(tsvContent);
-    setCopiedFormat('tsv');
-    setTimeout(() => setCopiedFormat(null), 2500);
-  };
 
   // Copy as a formatted text summary for Word documents and end-of-day reports
   const copyAsReportSummary = async () => {
@@ -158,8 +128,8 @@ export const PhaseLogModal: React.FC<PhaseLogModalProps> = ({
       await navigator.clipboard.writeText(plainText);
     }
 
-    setCopiedFormat('summary');
-    setTimeout(() => setCopiedFormat(null), 2500);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
   };
 
   return (
@@ -244,34 +214,20 @@ export const PhaseLogModal: React.FC<PhaseLogModalProps> = ({
             )}
           </div>
 
-          {/* Copy Actions */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={copyAsSpreadsheet}
-              disabled={logs.length === 0}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-xs border ${
-                copiedFormat === 'tsv'
-                  ? 'bg-emerald-600 text-white border-emerald-600'
-                  : 'bg-white hover:bg-slate-100 text-[#002244] border-slate-300 disabled:opacity-50 disabled:pointer-events-none'
-              }`}
-              title="Copies tab-separated data ready to paste into Excel, Google Sheets, or Word"
-            >
-              {copiedFormat === 'tsv' ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5 text-slate-600" />}
-              {copiedFormat === 'tsv' ? 'Copied to Clipboard!' : 'Copy Grid for Excel / Sheets'}
-            </button>
-
+          {/* Copy Action */}
+          <div className="flex items-center gap-2">
             <button
               onClick={copyAsReportSummary}
               disabled={logs.length === 0}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-xs border ${
-                copiedFormat === 'summary'
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-xs border ${
+                copied
                   ? 'bg-blue-700 text-white border-blue-700'
                   : 'bg-[#002244] hover:bg-[#001730] text-white border-[#002244] disabled:opacity-50 disabled:pointer-events-none'
               }`}
               title="Copies formatted single lines titled 'Summary of phases called on (Date)' ready to paste into Word"
             >
-              {copiedFormat === 'summary' ? <Check className="w-3.5 h-3.5 text-white" /> : <FileText className="w-3.5 h-3.5 text-blue-200" />}
-              {copiedFormat === 'summary' ? 'Report Copied!' : 'Copy End-of-Day Report'}
+              {copied ? <Check className="w-3.5 h-3.5 text-white" /> : <FileText className="w-3.5 h-3.5 text-blue-200" />}
+              {copied ? 'Report Copied!' : 'Copy End-of-Day Report'}
             </button>
           </div>
         </div>
