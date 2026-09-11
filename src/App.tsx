@@ -34,6 +34,20 @@ const DisneyNavy = '#002244';
 const LOGO_URL = 'https://sites.disney.com/app/uploads/sites/77/2024/11/Disney-Central-scaled.jpg'; // Disney Central logo URL
 const EMAIL_LOGO_URL = 'https://www.pngkey.com/png/full/230-2305796_book-your-ticket-monsters-inc-characters.png'; // Monsters Inc logo for email
 
+// Helper to compute today's date string in Eastern Time (America/New_York)
+export const getTodayEST = () => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().split('T')[0];
+  }
+};
+
 const getDefaultCommunities = (): Community[] => {
   return COMMUNITIES.map(name => ({
     id: name.toLowerCase().replace(/\s+/g, '-'),
@@ -45,8 +59,11 @@ const getDefaultCommunities = (): Community[] => {
 
 const getInitialCommunities = (): Community[] => {
   try {
+    const today = getTodayEST();
     const saved = localStorage.getItem('dc_communities_cache');
-    if (saved) {
+    const savedDate = localStorage.getItem('dc_communities_date');
+    // If the cached communities are from today, use them; if from yesterday, start fresh green
+    if (saved && savedDate === today) {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed;
@@ -86,6 +103,7 @@ export default function App() {
   const notifySyncChannels = (updatedCommunities: Community[]) => {
     try {
       localStorage.setItem('dc_communities_cache', JSON.stringify(updatedCommunities));
+      localStorage.setItem('dc_communities_date', getTodayEST());
     } catch (e) {
       console.warn('Failed to cache state:', e);
     }
@@ -141,8 +159,48 @@ export default function App() {
     };
   }, []);
 
+  // Active date tracking in Eastern Time (America/New_York)
+  const [currentDateEST, setCurrentDateEST] = useState<string>(() => getTodayEST());
+
   // Real-time Firestore synchronization for cross-user and cross-device persistence
   const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // Active watcher for Midnight Rollover in Eastern Time (America/New_York)
+  useEffect(() => {
+    const checkMidnight = () => {
+      const nowEST = getTodayEST();
+      if (nowEST !== currentDateEST) {
+        console.log(`[Midnight EST Rollover] ${currentDateEST} -> ${nowEST}. Resetting all communities to Green - Normal.`);
+        setCurrentDateEST(nowEST);
+
+        // 1. Immediately reset local dashboard cards to all Green - Normal
+        const fresh = getDefaultCommunities();
+        setCommunities(fresh);
+        notifySyncChannels(fresh);
+        setPhaseLogs([]);
+
+        // 2. Persist midnight reset to Firestore so all open TV monitors & laptops turn green instantly
+        try {
+          const docRef = doc(db, 'appState', 'communities');
+          setDoc(docRef, { items: fresh, dateStr: nowEST, lastUpdated: Date.now() }, { merge: true })
+            .catch(e => console.warn('Midnight rollover update error:', e));
+
+          const logDocRef = doc(db, 'dailyPhaseLogs', nowEST);
+          setDoc(logDocRef, { 
+            logs: [], 
+            dateStr: nowEST, 
+            currentStatuses: fresh, 
+            lastUpdated: Date.now() 
+          }, { merge: true }).catch(e => console.warn('Midnight log reset error:', e));
+        } catch (e) {
+          console.warn('Midnight reset push failed:', e);
+        }
+      }
+    };
+
+    const interval = setInterval(checkMidnight, 2000);
+    return () => clearInterval(interval);
+  }, [currentDateEST]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
@@ -151,9 +209,27 @@ export default function App() {
       unsubscribe = onSnapshot(
         docRef,
         (docSnap) => {
+          const today = getTodayEST();
           if (docSnap.exists()) {
             const data = docSnap.data();
-            if (data && Array.isArray(data.items) && data.items.length > 0) {
+
+            // Check if document data is from yesterday / previous day (or legacy without dateStr)
+            const isStaleDay = data.dateStr && data.dateStr !== today;
+            // Also check if dateStr is missing, but lastUpdated was before today at 00:00 EST
+            const hasLegacyStaleTimestamp = !data.dateStr && data.lastUpdated && (
+              data.lastUpdated < new Date(`${today}T00:00:00-05:00`).getTime()
+            );
+
+            if (isStaleDay || hasLegacyStaleTimestamp) {
+              // It's a new day! Reset all communities back to Green - Normal
+              const fresh = getDefaultCommunities();
+              setCommunities(fresh);
+              notifySyncChannels(fresh);
+              setIsLoading(false);
+              setFetchError(null);
+              setDoc(docRef, { items: fresh, dateStr: today, lastUpdated: Date.now() }, { merge: true })
+                .catch(err => console.warn('Firestore seed reset error:', err));
+            } else if (data && Array.isArray(data.items) && data.items.length > 0) {
               setCommunities(data.items);
               notifySyncChannels(data.items);
               setIsLoading(false);
@@ -161,8 +237,8 @@ export default function App() {
             }
           } else {
             // First time seeding Firestore doc
-            const initial = getInitialCommunities();
-            setDoc(docRef, { items: initial }).catch(err => console.warn('Firestore seed error:', err));
+            const initial = getDefaultCommunities();
+            setDoc(docRef, { items: initial, dateStr: today, lastUpdated: Date.now() }).catch(err => console.warn('Firestore seed error:', err));
           }
         },
         (error) => {
@@ -214,26 +290,11 @@ export default function App() {
   const [copiedType, setCopiedType] = useState<'email' | 'teams' | 'rich' | 'teams-rich' | 'teams-text' | null>(null);
   const [showSentNotification, setShowSentNotification] = useState(false);
 
-  // Helper to compute today's date string in Eastern Time
-  const getTodayEST = () => {
-    try {
-      return new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'America/New_York',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit'
-      }).format(new Date());
-    } catch {
-      return new Date().toISOString().split('T')[0];
-    }
-  };
-
   // Real-time synchronization for today's Phase Call Logs and instant dashboard card updates
   useEffect(() => {
-    const today = getTodayEST();
     let unsubscribe: (() => void) | null = null;
     try {
-      const docRef = doc(db, 'dailyPhaseLogs', today);
+      const docRef = doc(db, 'dailyPhaseLogs', currentDateEST);
       unsubscribe = onSnapshot(
         docRef,
         (docSnap) => {
@@ -241,6 +302,8 @@ export default function App() {
             const data = docSnap.data();
             if (data && Array.isArray(data.logs)) {
               setPhaseLogs(data.logs);
+            } else {
+              setPhaseLogs([]);
             }
             if (data && Array.isArray(data.currentStatuses) && data.currentStatuses.length > 0) {
               setCommunities(data.currentStatuses);
@@ -259,6 +322,8 @@ export default function App() {
                 return updated;
               });
             }
+          } else {
+            setPhaseLogs([]);
           }
         },
         (error) => {
@@ -298,7 +363,7 @@ export default function App() {
       clearInterval(interval);
       if (unsubscribe) unsubscribe();
     };
-  }, []);
+  }, [currentDateEST]);
 
   const triggerPhasesSent = () => {
     setShowSentNotification(true);
@@ -505,7 +570,7 @@ export default function App() {
     // Also persist appState doc
     try {
       const docRef = doc(db, 'appState', 'communities');
-      await setDoc(docRef, { items: nextState, lastUpdated: now.getTime() }, { merge: true });
+      await setDoc(docRef, { items: nextState, dateStr: today, lastUpdated: now.getTime() }, { merge: true });
     } catch (err) {
       console.warn('Failed to save status to Firestore:', err);
     }
@@ -544,7 +609,7 @@ export default function App() {
     // Instant cloud persistence with Firestore
     try {
       const docRef = doc(db, 'appState', 'communities');
-      await setDoc(docRef, { items: nextState, lastUpdated: Date.now() }, { merge: true });
+      await setDoc(docRef, { items: nextState, dateStr: today, lastUpdated: Date.now() }, { merge: true });
     } catch (err) {
       console.warn('Failed to reset updates in Firestore:', err);
     }
