@@ -305,23 +305,6 @@ export default function App() {
             } else {
               setPhaseLogs([]);
             }
-            if (data && Array.isArray(data.currentStatuses) && data.currentStatuses.length > 0) {
-              setCommunities(data.currentStatuses);
-              notifySyncChannels(data.currentStatuses);
-            } else if (data && Array.isArray(data.logs) && data.logs.length > 0) {
-              // Auto-reconcile latest called status from logs so cards update instantly
-              setCommunities(prev => {
-                const updated = prev.map(comm => {
-                  const latestLog = data.logs.find((l: PhaseCallLog) => l.communityId === comm.id || l.communityName === comm.name);
-                  if (latestLog && latestLog.status) {
-                    return { ...comm, status: latestLog.status };
-                  }
-                  return comm;
-                });
-                notifySyncChannels(updated);
-                return updated;
-              });
-            }
           } else {
             setPhaseLogs([]);
           }
@@ -365,10 +348,67 @@ export default function App() {
     };
   }, [currentDateEST]);
 
-  const triggerPhasesSent = () => {
+  const triggerPhasesSent = async () => {
+    // 1. Capture the confirmed updated phases that are being distributed
+    const phasesToLog = communities.filter(c => c.isUpdated);
+    const now = new Date();
+    const today = getTodayEST();
+    const callerName = user?.name || 'Coordinator';
+    const callerId = user?.id || '';
+
+    if (phasesToLog.length > 0) {
+      const newEntries: PhaseCallLog[] = phasesToLog.map((comm, idx) => ({
+        id: `${comm.id}-${now.getTime()}-${idx}`,
+        communityId: comm.id,
+        communityName: comm.name,
+        status: comm.status,
+        calledBy: callerName,
+        calledById: callerId,
+        calledAt: now.toISOString(),
+        timestamp: now.getTime() + idx, // slight offset to preserve list ordering
+        dateStr: today
+      }));
+
+      // Update local log state immediately
+      setPhaseLogs(prev => [...newEntries, ...prev.filter(l => l.dateStr === today)]);
+
+      // Persist to daily Firestore logs
+      try {
+        const logDocRef = doc(db, 'dailyPhaseLogs', today);
+        const updatedLogs = [...newEntries, ...phaseLogs.filter(l => l.dateStr === today)];
+        await setDoc(logDocRef, {
+          logs: updatedLogs,
+          dateStr: today,
+          lastUpdated: now.getTime()
+        }, { merge: true });
+      } catch (err) {
+        console.warn('Failed to save sent phases to Firestore dailyPhaseLogs:', err);
+      }
+
+      // Also forward to server endpoint if running in container
+      for (const entry of newEntries) {
+        try {
+          fetch('/api/phase-logs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({
+              communityId: entry.communityId,
+              communityName: entry.communityName,
+              status: entry.status,
+              calledBy: callerName,
+              calledById: callerId
+            })
+          }).catch(() => {});
+        } catch (e) {}
+      }
+    }
+
+    // 2. Show celebratory sparkle notification and close modal
     setShowSentNotification(true);
     setShowModal(false);
-    resetUpdates();
+
+    // 3. Mark all communities as sent (clear the unconfirmed/pending 'isUpdated' badge)
+    await resetUpdates();
   };
 
   useEffect(() => {
@@ -531,48 +571,15 @@ export default function App() {
     setCommunities(nextState);
     notifySyncChannels(nextState);
 
-    const targetCommunity = communities.find(c => c.id === id);
-    const communityName = targetCommunity ? targetCommunity.name : id;
     const now = new Date();
     const today = getTodayEST();
-    const callerName = user?.name || 'Coordinator';
-    const callerId = user?.id || '';
 
-    const newLogEntry: PhaseCallLog = {
-      id: `${id}-${now.getTime()}`,
-      communityId: id,
-      communityName,
-      status: newStatus,
-      calledBy: callerName,
-      calledById: callerId,
-      calledAt: now.toISOString(),
-      timestamp: now.getTime(),
-      dateStr: today
-    };
-
-    // Optimistic log update in local state
-    setPhaseLogs(prev => [newLogEntry, ...prev.filter(l => l.dateStr === today)]);
-
-    // Persist to daily Firestore record including currentStatuses (instant real-time sync across devices)
-    try {
-      const logDocRef = doc(db, 'dailyPhaseLogs', today);
-      const updatedLogs = [newLogEntry, ...phaseLogs.filter(l => l.dateStr === today)];
-      await setDoc(logDocRef, { 
-        logs: updatedLogs, 
-        dateStr: today,
-        currentStatuses: nextState,
-        lastUpdated: now.getTime()
-      }, { merge: true });
-    } catch (err) {
-      console.warn('Failed to save phase log to Firestore:', err);
-    }
-
-    // Also persist appState doc
+    // Persist real-time card statuses across connected devices without logging until 'Send Phases' is confirmed
     try {
       const docRef = doc(db, 'appState', 'communities');
       await setDoc(docRef, { items: nextState, dateStr: today, lastUpdated: now.getTime() }, { merge: true });
     } catch (err) {
-      console.warn('Failed to save status to Firestore:', err);
+      console.warn('Failed to save status to Firestore appState:', err);
     }
 
     try {
@@ -581,9 +588,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({ 
           id, 
-          status: newStatus,
-          calledBy: callerName,
-          calledById: callerId
+          status: newStatus
         })
       });
       if (res.ok) {

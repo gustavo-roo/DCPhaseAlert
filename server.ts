@@ -94,39 +94,17 @@ async function startServer() {
   // API: Update a community status
   app.post(["/api/communities/update", "/api/communities/update/"], (req, res) => {
     try {
-      const { id, status, calledBy, calledById } = req.body;
-      console.log(`[${new Date().toISOString()}] POST ${req.originalUrl} - ID: ${id}, Status: ${status}, CalledBy: ${calledBy}`);
+      const { id, status } = req.body;
+      console.log(`[${new Date().toISOString()}] POST ${req.originalUrl} - ID: ${id}, Status: ${status}`);
       if (!id || !status) {
         return res.status(400).json({ error: 'Missing ID or Status' });
       }
       
-      const targetCommunity = communityState.find(c => c.id === id);
-      const communityName = targetCommunity ? targetCommunity.name : id;
-
       communityState = communityState.map(c => 
         c.id === id ? { ...c, status, isUpdated: true } : c
       );
 
-      // Record in daily phase log
-      const now = new Date();
-      const today = getTodayDateStr();
-      const newLog: ServerPhaseLog = {
-        id: `${id}-${now.getTime()}`,
-        communityId: id,
-        communityName,
-        status,
-        calledBy: calledBy || 'Coordinator',
-        calledById,
-        calledAt: now.toISOString(),
-        timestamp: now.getTime(),
-        dateStr: today
-      };
-
-      // Filter out any stale logs from previous days if midnight cron was missed
-      dailyPhaseLogs = dailyPhaseLogs.filter(l => l.dateStr === today);
-      dailyPhaseLogs.unshift(newLog);
-
-      res.json({ success: true, state: communityState, log: newLog });
+      res.json({ success: true, state: communityState });
     } catch (error) {
       console.error('Error in POST /api/communities/update:', error);
       res.status(500).json({ error: 'Internal Server Error' });

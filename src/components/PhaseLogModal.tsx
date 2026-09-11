@@ -270,7 +270,7 @@ export const PhaseLogModal: React.FC<PhaseLogModalProps> = ({
               <Clock className="w-10 h-10 stroke-[1.5] mb-2 text-slate-300" />
               <p className="font-bold text-slate-600">No Phase Calls Logged Today</p>
               <p className="text-xs text-slate-400 max-w-sm mt-1">
-                Whenever a coordinator changes a community phase on the hub, it will be automatically recorded here with timestamp and coordinator details.
+                Phases are logged here once you click &quot;Send Phases&quot; in the Review &amp; Distribute window to confirm and communicate phase calls.
               </p>
             </div>
           ) : filteredLogs.length === 0 ? (
